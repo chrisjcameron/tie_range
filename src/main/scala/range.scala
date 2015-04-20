@@ -83,16 +83,56 @@ object TieRange{
         val rangeTwoSet = Set[Token]()
         val srcTokens = triplet.srcAttr
         val dstTokens = triplet.dstAttr
+        val srcId = triplet.srcId
         val dstId = triplet.dstId
 
         for (t <- srcTokens) {
             //(j, k), for candidate j and fixed k
-            val tempToken = Token(t.dstId, dstId, 0)
+            val tempToken = Token(t.dstId, dstId, 2)
             if (dstTokens.contains(tempToken)) {
-                return tempToken
+                return Token(srcId, dstId, 2)
             }
         }
         return Token(-1L, -1L, -1)
+    }
+
+
+    //what completes a range 2 token?
+    //say we're looking at a (k, l) link
+    //say there's a range two token i --> j --> k, Token(i, k, 2)
+    //we need to find a range 1 token, Token(k, l, 1)
+    def range_three_map(triplet: EdgeTriplet[Set[Token], Int], rangeKnown: Set[Token]): Token = {
+        val rangeThreeSet = Set[Token]()
+        val tokenSet = triplet.srcAttr.union(triplet.dstAttr)
+        val srcId = triplet.srcId
+        val dstId = triplet.dstId
+
+        for (t <- tokenSet){
+            if (t.range == 2 & !rangeKnown.contains(t)){
+                val tempTokenOne = Token(t.dstId, dstId, 0)
+                val tempTokenTwo = Token(t.dstId, srcId, 0)
+                if (tokenSet.contains(tempTokenOne) || tokenSet.contains(tempTokenTwo)){
+                    return Token(srcId, dstId, 3)
+                }
+            }
+        }
+        return Token(-1L, -1L, -1)
+    }
+
+    //if we haven't found, pass to neighbors
+    def pass_messages(triplet: EdgeContext[Set[Token], Int, Set[Token]], rangeKnown: Set[Token]): Unit = {
+        val srcTokens = triplet.srcAttr
+        val dstTokens = triplet.dstAttr
+        val toSend = Set[Token]().union(dstTokens)
+
+        for (t <- srcTokens){
+            if (!rangeKnown.contains(t) & t.dstId != triplet.dstId){
+                val newMsg = t.copy()
+                newMsg.range += 1
+                toSend += newMsg
+            }
+        }
+        triplet.sendToDst(toSend)
     }
 
     def main(args: Array[String]) {
@@ -100,13 +140,10 @@ object TieRange{
         val conf = new SparkConf().setAppName("Tie range")
         val sc = new SparkContext(conf)
 
-        val path = "/Users/g/Google Drive/independent-work/range/release-youtube-links_gc.ncol"
+        val path = "/Users/g/Google Drive/independent-work/range/Reed98_gc.ncol"
 
         val edgeData = sc.textFile(path).map(s => s.split(" ").map(x => x.toInt))
         val edgeArray = edgeData.map(s => Edge(s(0), s(1), 0)).collect
-
-        //-1: haven't found or infinite
-        val rangeKnown = Map[(Long, Long), Int]()
 
         val edges: RDD[Edge[Int]] = sc.parallelize(edgeArray)
 
@@ -120,20 +157,28 @@ object TieRange{
         //send a src-dst token to source
         val withTokens: VertexRDD[Set[Token]] = graphOne.aggregateMessages[Set[Token]](
             triplet => {
-                triplet.sendToSrc(Set( Token(triplet.srcId, triplet.dstId, 0 ) ) )
-                triplet.sendToDst(Set( Token(triplet.srcId, triplet.dstId, 0 ) ) )
+                triplet.sendToSrc(Set( Token(triplet.srcId, triplet.dstId, 1 ) ) )
+                triplet.sendToDst(Set( Token(triplet.srcId, triplet.dstId, 1 ) ) )
             },
             (a, b) => a.union(b)
         )
 
-
-
         val defaultUserTwo = Set[Token]()
         val graphTwo = Graph(withTokens, edges, defaultUserTwo)
 
-        val rangeTwo = graphTwo.triplets.map(triplet => range_two_map(triplet))
+        val rangeTwoKnown = Set[Token]() ++= graphTwo.triplets.map(triplet => range_two_map(triplet)).collect.toSet
 
-        println(rangeTwo.collect.toSet.size)
+        val passMessages: VertexRDD[Set[Token]] = graphTwo.aggregateMessages[Set[Token]](
+            triplet => pass_messages(triplet, rangeTwoKnown),
+            (a, b) => a.union(b)
+        )
+
+        val graphThree = Graph(passMessages, edges, defaultUserTwo)
+
+        val rangeThreeFound = graphThree.triplets.map(triplet => range_three_map(triplet, rangeTwoKnown)).collect.toSet
+
+        println(rangeTwoKnown.size)
+        println(rangeThreeFound.size)
 
 
 
