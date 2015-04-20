@@ -39,29 +39,28 @@ An edge triplet should be thought of as an outlink
 object TieRange{
 
     //override equals to care only about the first two elements
-    case class Token( srcId: Long, dstId: Long, var range: Int ) {
-        override def equals( arg: Any ) = arg match {
-            case Token(s, t, _) => (s, t) == (srcId, dstId)
-            case _ => false
-        }
-        override def hashCode() = (srcId, dstId).hashCode
-    }
-
-
-
-
-
-
-    //keeps all tokens with range greater than or equal to the cutoff
-    def keep_tokens(id: Long, attr: Set[Token], cutoff: Int) = {
-        val output = Set[Token]()
-        for (token <- attr) {
-            if (token.range >= cutoff) {
-                output += token
+    //originId is the spot where the TOKEN started
+    //i.e. Token(src, dst, dst, 1) represnts the (src, dst) edge but the token starts at dst
+    case class Token( srcId: Long, dstId: Long, originId: Long, var range: Int ) {
+        def companion: Token = {
+            if (originId == srcId) {
+                Token(srcId, dstId, dstId, range)
+            }
+            else if (originId == dstId) {
+                Token(srcId, dstId, srcId, range)
+            }
+            else {
+                Token(srcId, dstId, originId, range)
             }
         }
-        output
+        override def equals( arg: Any ) = arg match {
+            case Token(s, t, u, _) => (s, t, u) == (srcId, dstId, originId)
+            case _ => false
+        }
+        override def hashCode() = (srcId, dstId, originId).hashCode
     }
+
+
 
 
     //idea: if i --> j, and j --> k, i --> k then the i --> k link is range two
@@ -88,51 +87,56 @@ object TieRange{
 
         for (t <- srcTokens) {
             //(j, k), for candidate j and fixed k
-            val tempToken = Token(t.dstId, dstId, 2)
+            val tempToken = Token(t.dstId, dstId, dstId, 2)
             if (dstTokens.contains(tempToken)) {
-                return Token(srcId, dstId, 2)
+                return Token(srcId, dstId, -1L, 2)
             }
         }
-        return Token(-1L, -1L, -1)
+        return Token(-1L, -1L, -1L, -1)
     }
 
 
-    //what completes a range 2 token?
-    //say we're looking at a (k, l) link
-    //say there's a range two token i --> j --> k, Token(i, k, 2)
-    //we need to find a range 1 token, Token(k, l, 1)
-    def range_three_map(triplet: EdgeTriplet[Set[Token], Int], rangeKnown: Set[Token]): Token = {
+    //strategy here is a little different
+    //for each edge, we cycle through the source tokens
+    //remember that Token(1,2,_) will begin at both 1 and 2
+    //so for some third edge, after a step of passing, if Token(1,2,2) in both src and dst
+    //we have found a range 3 path
+
+    //assume we only have range=2 tokens
+    def range_three_map(triplet: EdgeTriplet[Set[Token], Int]): Set[Token] = {
         val rangeThreeSet = Set[Token]()
-        val tokenSet = triplet.srcAttr.union(triplet.dstAttr)
+        val srcSet = triplet.srcAttr
+        val dstSet = triplet.dstAttr
         val srcId = triplet.srcId
         val dstId = triplet.dstId
 
-        for (t <- tokenSet){
-            if (t.range == 2 & !rangeKnown.contains(t)){
-                val tempTokenOne = Token(t.dstId, dstId, 0)
-                val tempTokenTwo = Token(t.dstId, srcId, 0)
-                if (tokenSet.contains(tempTokenOne) || tokenSet.contains(tempTokenTwo)){
-                    return Token(srcId, dstId, 3)
-                }
+        for (t <- srcSet){
+            if (dstSet.contains(t)){
+                val newToken = t.copy()
+                newToken.range = 3
+                rangeThreeSet += newToken
             }
         }
-        return Token(-1L, -1L, -1)
+
+        rangeThreeSet
     }
+
 
     //if we haven't found, pass to neighbors
     def pass_messages(triplet: EdgeContext[Set[Token], Int, Set[Token]], rangeKnown: Set[Token]): Unit = {
-        val srcTokens = triplet.srcAttr
-        val dstTokens = triplet.dstAttr
-        val toSend = Set[Token]().union(dstTokens)
+        val toSend = Set[Token]()
+        val tokens = triplet.srcAttr.union(triplet.dstAttr)
 
-        for (t <- srcTokens){
-            if (!rangeKnown.contains(t) & t.dstId != triplet.dstId){
+        for (t <- tokens){
+            val foundToken = Token(t.srcId, t.dstId, -1, 2)
+            if (!rangeKnown.contains(foundToken)){
                 val newMsg = t.copy()
                 newMsg.range += 1
                 toSend += newMsg
             }
         }
         triplet.sendToDst(toSend)
+        triplet.sendToSrc(toSend)
     }
 
     def main(args: Array[String]) {
@@ -157,8 +161,8 @@ object TieRange{
         //send a src-dst token to source
         val withTokens: VertexRDD[Set[Token]] = graphOne.aggregateMessages[Set[Token]](
             triplet => {
-                triplet.sendToSrc(Set( Token(triplet.srcId, triplet.dstId, 1 ) ) )
-                triplet.sendToDst(Set( Token(triplet.srcId, triplet.dstId, 1 ) ) )
+                triplet.sendToSrc(Set( Token(triplet.srcId, triplet.dstId, triplet.srcId, 1 ) ) )
+                triplet.sendToDst(Set( Token(triplet.srcId, triplet.dstId, triplet.dstId, 1 ) ) )
             },
             (a, b) => a.union(b)
         )
@@ -168,6 +172,8 @@ object TieRange{
 
         val rangeTwoKnown = Set[Token]() ++= graphTwo.triplets.map(triplet => range_two_map(triplet)).collect.toSet
 
+        println(rangeTwoKnown)
+
         val passMessages: VertexRDD[Set[Token]] = graphTwo.aggregateMessages[Set[Token]](
             triplet => pass_messages(triplet, rangeTwoKnown),
             (a, b) => a.union(b)
@@ -175,7 +181,7 @@ object TieRange{
 
         val graphThree = Graph(passMessages, edges, defaultUserTwo)
 
-        val rangeThreeFound = graphThree.triplets.map(triplet => range_three_map(triplet, rangeTwoKnown)).collect.toSet
+        val rangeThreeFound = graphThree.triplets.map(triplet => range_three_map(triplet)).reduce((a, b) => a.union(b))
 
         println(rangeTwoKnown.size)
         println(rangeThreeFound.size)
