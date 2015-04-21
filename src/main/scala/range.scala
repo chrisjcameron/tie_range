@@ -103,7 +103,7 @@ object TieRange{
     //      1) they are not the destiantion
     //      2) they are not the source
     //if we pass to 
-    def pass_messages(triplet: EdgeContext[Set[Token], Int, Set[Token]], rangeKnown: collection.immutable.Set[Token]): Unit = {
+    def pass_messages(triplet: EdgeContext[Set[Token], Int, Set[Token]]): Unit = {
 
         val srcTokens = triplet.srcAttr
         val dstTokens = triplet.dstAttr
@@ -113,33 +113,26 @@ object TieRange{
         //downstream
         for (t <- srcTokens){
             val foundToken = Token(t.srcId, t.dstId, -1L, true, 2)
-            //not found, this is the big filter step
-            if (!rangeKnown.contains(foundToken)){
-                //don't pass to destination
-                if (t.dstId != triplet.dstId){
-                    val dstPass = t.copy()
-                    dstPass.range += 1
-                    dstPass.downstream = true
-                    toDst += dstPass
-                }
-
+            //don't pass to destination
+            if (t.dstId != triplet.dstId){
+                val dstPass = t.copy()
+                dstPass.range += 1
+                dstPass.downstream = true
+                toDst += dstPass
             }
         }
 
         //upstream
         for (t <- dstTokens){
             val foundToken = Token(t.srcId, t.dstId, -1L, true, 2)
-            //not found, this is the big filter step
-            if (!rangeKnown.contains(foundToken)){
-                //don't pass to destination
-                if (t.srcId != triplet.srcId){
-                    val srcPass = t.copy()
-                    srcPass.range += 1
-                    srcPass.downstream = false
-                    toSrc += srcPass
-                }
-
+            //don't pass to destination
+            if (t.srcId != triplet.srcId){
+                val srcPass = t.copy()
+                srcPass.range += 1
+                srcPass.downstream = false
+                toSrc += srcPass
             }
+
         }
 
         triplet.sendToDst(toDst)
@@ -147,14 +140,11 @@ object TieRange{
     }
 
 
-    //strategy here is a little different
-    //for each edge, we cycle through the source tokens
-    //remember that Token(1,2,_) will begin at both 1 and 2
-    //so for some third edge, after a step of passing, if Token(1,2,2) in both src and dst
-    //we have found a range 3 path
-
-    //assume we only have range=2 tokens
-    def range_three_map(triplet: EdgeTriplet[Set[Token], Int]): Set[Token] = {
+    //strategy:
+    //for each src, go through all inlinks
+    //for each dst, go through all outlinks
+    //
+    def range_three_map(triplet: EdgeTriplet[Set[Token], Int], edgeSet: Set[(Long, Long)]): Set[Token] = {
         val rangeThreeSet = Set[Token]()
         val srcSet = triplet.srcAttr
         val dstSet = triplet.dstAttr
@@ -162,11 +152,18 @@ object TieRange{
         val dstId = triplet.dstId
 
         for (t <- srcSet){
-            if (t.downstream == true && dstSet.contains(t.companion)){
-                val newToken = Token(t.srcId, t.dstId, -1L, true, 3)
-                rangeThreeSet += newToken
+            //inlink to src
+            if (t.dstId == srcId){
+                for (u <- dstSet) {
+                    //outlink from dst
+                    if (u.srcId == dstId){
+                        val candidate = (t.srcId, u.dstId)
+                        if (edgeSet.contains(candidate)){
+                            rangeThreeSet += Token(t.srcId, u.dstId, -1L, true, 3)
+                        }
+                    }
+                }
             }
-        }
 
         rangeThreeSet
     }
@@ -184,6 +181,7 @@ object TieRange{
 
         val edgeData = sc.textFile(path).map(s => s.split(" ").map(x => x.toInt))
         val edgeArray = edgeData.map(s => Edge(s(0), s(1), 0)).collect
+        val edgeSet = edgeData.map(s => (s(0).toLong, s(1).toLong)).collect.toSet
 
         val edges: RDD[Edge[Int]] = sc.parallelize(edgeArray)
 
@@ -210,22 +208,33 @@ object TieRange{
 
         val rangeTwoKnown = Set[Token]() ++= graphTwo.triplets.map(triplet => range_two_map(triplet)).collect.toSet
 
-        val immutableRangeTwo = collection.immutable.Set(rangeTwoKnown.toArray:_*)
+        val rangeThreeKnown = Set[Token] ++= graphTwo.triplets.map(triplet => range_three_map(triplet, edgeSet)).collect.toSet
 
-        val passMessages: VertexRDD[Set[Token]] = graphTwo.aggregateMessages[Set[Token]](
-            triplet => pass_messages(triplet, immutableRangeTwo),
-            (a, b) => a.union(b)
-        )
+        //val immutableRangeTwo = collection.immutable.Set(rangeTwoKnown.toArray:_*)
+
+        //println(immutableRangeTwo)
+
+        //val prunedGraph = graphTwo.mapVertices((id, attr) => attr.filter(x => immutableRangeTwo.contains(Token(x.srcId, x.dstId, -1L, true, 2))))
+        
+
+        //val passMessages: VertexRDD[Set[Token]] = prunedGraph.aggregateMessages[Set[Token]](
+        //    triplet => pass_messages(triplet),
+        //    (a, b) => a.union(b)
+        //)
 
         //val graphThree = Graph(passMessages, edges, defaultUserTwo)
 
+        //graphThree.cache()
+
         //val rangeThreeFound = graphThree.triplets.map(triplet => range_three_map(triplet)).reduce((a, b) => a.union(b))
         
-        //println(rangeTwoKnown.size)
-        //println(rangeThreeFound.size)
+        println(rangeTwoKnown.size)
+        println(rangeThreeFound.size)
+        println(rangeThreeFound)
 
-        println(passMessages.map(x => x._2.size).reduce((a, b) => a + b))
 
+        //println(prunedGraph.vertices.map(x => x._2.size).reduce((a, b) => math.max(a, b)))
+        //println(prunedGraph.vertices.map(x => x._2.size).reduce((a, b) => a + b))
 
 
     }
