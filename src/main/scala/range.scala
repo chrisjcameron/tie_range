@@ -41,23 +41,23 @@ object TieRange{
     //override equals to care only about the first two elements
     //originId is the spot where the TOKEN started
     //i.e. Token(src, dst, dst, 1) represnts the (src, dst) edge but the token starts at dst
-    case class Token( srcId: Long, dstId: Long, originId: Long, var range: Int ) {
+    case class Token( srcId: Long, dstId: Long, originId: Long, var downstream: Boolean, var range: Int ) {
         def companion: Token = {
             if (originId == srcId) {
-                Token(srcId, dstId, dstId, range)
+                Token(srcId, dstId, dstId, !downstream, range)
             }
             else if (originId == dstId) {
-                Token(srcId, dstId, srcId, range)
+                Token(srcId, dstId, srcId, !downstream, range)
             }
             else {
-                Token(srcId, dstId, originId, range)
+                Token(srcId, dstId, originId, downstream, range)
             }
         }
         override def equals( arg: Any ) = arg match {
-            case Token(s, t, u, _) => (s, t, u) == (srcId, dstId, originId)
+            case Token(s, t, u, v, _) => (s, t, u, v) == (srcId, dstId, originId, downstream)
             case _ => false
         }
-        override def hashCode() = (srcId, dstId, originId).hashCode
+        override def hashCode() = (srcId, dstId, originId, downstream).hashCode
     }
 
 
@@ -79,20 +79,71 @@ object TieRange{
     //
     //on one tie, we just check if that tie is range two! forget the rest       
     def range_two_map(triplet: EdgeTriplet[Set[Token], Int]): Token = {
-        val rangeTwoSet = Set[Token]()
         val srcTokens = triplet.srcAttr
         val dstTokens = triplet.dstAttr
         val srcId = triplet.srcId
         val dstId = triplet.dstId
 
         for (t <- srcTokens) {
+            //needs to be (i, j), cannot be (i, k)
+            if (t.srcId == triplet.srcId && t.dstId != triplet.dstId){
+                val tempToken = Token(t.dstId, dstId, dstId, true, 2)
+                if (dstTokens.contains(tempToken)) {
+                    return Token(srcId, dstId, -1L, true, 2)
+                }
+            }
             //(j, k), for candidate j and fixed k
-            val tempToken = Token(t.dstId, dstId, dstId, 2)
-            if (dstTokens.contains(tempToken)) {
-                return Token(srcId, dstId, -1L, 2)
+        }
+        return Token(-1L, -1L, -1L, true, -1)
+    }
+
+    //if we haven't found, pass to neighbors
+
+    //pass tokens to a node if:
+    //      1) they are not the destiantion
+    //      2) they are not the source
+    //if we pass to 
+    def pass_messages(triplet: EdgeContext[Set[Token], Int, Set[Token]], rangeKnown: collection.immutable.Set[Token]): Unit = {
+
+        val srcTokens = triplet.srcAttr
+        val dstTokens = triplet.dstAttr
+        val toSrc = Set[Token]()
+        val toDst = Set[Token]()
+
+        //downstream
+        for (t <- srcTokens){
+            val foundToken = Token(t.srcId, t.dstId, -1L, true, 2)
+            //not found, this is the big filter step
+            if (!rangeKnown.contains(foundToken)){
+                //don't pass to destination
+                if (t.dstId != triplet.dstId){
+                    val dstPass = t.copy()
+                    dstPass.range += 1
+                    dstPass.downstream = true
+                    toDst += dstPass
+                }
+
             }
         }
-        return Token(-1L, -1L, -1L, -1)
+
+        //upstream
+        for (t <- dstTokens){
+            val foundToken = Token(t.srcId, t.dstId, -1L, true, 2)
+            //not found, this is the big filter step
+            if (!rangeKnown.contains(foundToken)){
+                //don't pass to destination
+                if (t.srcId != triplet.srcId){
+                    val srcPass = t.copy()
+                    srcPass.range += 1
+                    srcPass.downstream = false
+                    toSrc += srcPass
+                }
+
+            }
+        }
+
+        triplet.sendToDst(toDst)
+        triplet.sendToSrc(toSrc)
     }
 
 
@@ -111,9 +162,8 @@ object TieRange{
         val dstId = triplet.dstId
 
         for (t <- srcSet){
-            if (dstSet.contains(t)){
-                val newToken = t.copy()
-                newToken.range = 3
+            if (t.downstream == true && dstSet.contains(t.companion)){
+                val newToken = Token(t.srcId, t.dstId, -1L, true, 3)
                 rangeThreeSet += newToken
             }
         }
@@ -122,29 +172,15 @@ object TieRange{
     }
 
 
-    //if we haven't found, pass to neighbors
-    def pass_messages(triplet: EdgeContext[Set[Token], Int, Set[Token]], rangeKnown: Set[Token]): Unit = {
-        val toSend = Set[Token]()
-        val tokens = triplet.srcAttr.union(triplet.dstAttr)
 
-        for (t <- tokens){
-            val foundToken = Token(t.srcId, t.dstId, -1, 2)
-            if (!rangeKnown.contains(foundToken)){
-                val newMsg = t.copy()
-                newMsg.range += 1
-                toSend += newMsg
-            }
-        }
-        triplet.sendToDst(toSend)
-        triplet.sendToSrc(toSend)
-    }
+
 
     def main(args: Array[String]) {
 
         val conf = new SparkConf().setAppName("Tie range")
         val sc = new SparkContext(conf)
 
-        val path = "/Users/g/Google Drive/independent-work/range/Reed98_gc.ncol"
+        val path = "/Users/g/Google Drive/independent-work/range/Texas84_gc.ncol"
 
         val edgeData = sc.textFile(path).map(s => s.split(" ").map(x => x.toInt))
         val edgeArray = edgeData.map(s => Edge(s(0), s(1), 0)).collect
@@ -161,8 +197,8 @@ object TieRange{
         //send a src-dst token to source
         val withTokens: VertexRDD[Set[Token]] = graphOne.aggregateMessages[Set[Token]](
             triplet => {
-                triplet.sendToSrc(Set( Token(triplet.srcId, triplet.dstId, triplet.srcId, 1 ) ) )
-                triplet.sendToDst(Set( Token(triplet.srcId, triplet.dstId, triplet.dstId, 1 ) ) )
+                triplet.sendToSrc(Set( Token(triplet.srcId, triplet.dstId, triplet.srcId, true, 1 ) ) )
+                triplet.sendToDst(Set( Token(triplet.srcId, triplet.dstId, triplet.dstId, true, 1 ) ) )
             },
             (a, b) => a.union(b)
         )
@@ -170,21 +206,25 @@ object TieRange{
         val defaultUserTwo = Set[Token]()
         val graphTwo = Graph(withTokens, edges, defaultUserTwo)
 
+        graphTwo.cache()
+
         val rangeTwoKnown = Set[Token]() ++= graphTwo.triplets.map(triplet => range_two_map(triplet)).collect.toSet
 
-        println(rangeTwoKnown)
+        val immutableRangeTwo = collection.immutable.Set(rangeTwoKnown.toArray:_*)
 
         val passMessages: VertexRDD[Set[Token]] = graphTwo.aggregateMessages[Set[Token]](
-            triplet => pass_messages(triplet, rangeTwoKnown),
+            triplet => pass_messages(triplet, immutableRangeTwo),
             (a, b) => a.union(b)
         )
 
-        val graphThree = Graph(passMessages, edges, defaultUserTwo)
+        //val graphThree = Graph(passMessages, edges, defaultUserTwo)
 
-        val rangeThreeFound = graphThree.triplets.map(triplet => range_three_map(triplet)).reduce((a, b) => a.union(b))
+        //val rangeThreeFound = graphThree.triplets.map(triplet => range_three_map(triplet)).reduce((a, b) => a.union(b))
+        
+        //println(rangeTwoKnown.size)
+        //println(rangeThreeFound.size)
 
-        println(rangeTwoKnown.size)
-        println(rangeThreeFound.size)
+        println(passMessages.map(x => x._2.size).reduce((a, b) => a + b))
 
 
 
