@@ -18,4 +18,4 @@ The C code requires igraph to build. The compile command is included as a commen
   
 +This code is licensed under a [GPL-3 license](https://www.gnu.org/copyleft/gpl.html).
 
-+The data is not coverd by this license. Get the data from https://archive.org/details/oxford-2005-facebook-matrix
++The data is not covered by this license. Get the data from https://archive.org/details/oxford-2005-facebook-matrix
