@@ -1,4 +1,3 @@
-project/*
-target/*
+spark/project/*
+spark/target/*
 *.DS_Store
-release-youtube-links_gc.ncol
