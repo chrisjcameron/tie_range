@@ -134,6 +134,7 @@ int tie_range(const igraph_t *g, igraph_integer_t eid, igraph_vector_t *visited,
     // Step 0 - first set of neighbors
     VECTOR(*visited)[ (int long) s_node ] = 1;
     /* Prevent Vector allocation by direct lookup in iGraph internals */
+    /* igraph/src/type_indexededgelist.c */
     idx=0;
     j= VECTOR(g->os)[s_node+1];
     //printf("Step0_to: j = %li\n", j);
