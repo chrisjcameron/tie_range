@@ -1,0 +1,3 @@
+spark/project/*
+spark/target/*
+*.DS_Store
